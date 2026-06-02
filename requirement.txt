@@ -1,6 +1,14 @@
-opencv-python 
-mediapipe 
-pyautogui 
-screeninfo 
-keyboard 
-numpy
+# GazeSwitch + FingerScroll dependencies
+# Install:  pip install -r requirement.txt
+#
+# Shared by both gazeswitch.py and fingerscroll.py:
+opencv-python==4.13.0.92
+mediapipe==0.10.35
+pyautogui==0.9.54
+keyboard==0.13.5
+numpy==2.4.4
+pystray==0.19.5
+pillow==12.2.0
+
+# Used only by gazeswitch.py (multi-monitor layout):
+screeninfo==0.8.1
