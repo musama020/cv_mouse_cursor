@@ -23,12 +23,21 @@ On first run the two MediaPipe models (~4 MB hand, ~28 MB face) download automat
 
 ## 2. Run
 
-### Debug mode (console logs + live camera preview)
-
-Use this for tuning and to see what the camera sees:
+Everything launches through **`handler.py`**, which picks which feature(s) to run:
 
 ```powershell
-python gazecontrol.py --debug
+python handler.py both     # gaze + scroll together (default)
+python handler.py gaze     # gaze switch only
+python handler.py scroll   # finger scroll only
+```
+
+### Debug mode (console logs + live camera preview)
+
+Add `--debug` to any of the above. Use it for tuning and to see what the camera sees:
+
+```powershell
+python handler.py both --debug
+python handler.py scroll --debug
 ```
 
 - A preview window opens with on-screen state and landmarks.
@@ -43,9 +52,9 @@ Double-click **`start.vbs`**, or run:
 wscript start.vbs
 ```
 
-The app runs entirely in the system tray — no console, no preview window. This is the shippable way to run it day-to-day.
+The app runs entirely in the system tray — no console, no preview window. This is the shippable way to run it day-to-day. By default it runs **both** features; edit the `both` word in `start.vbs` to `gaze` or `scroll` to run only one.
 
-> `start.vbs` launches `pythonw gazecontrol.py`, so Python must be installed and on PATH on the target machine.
+> `start.vbs` launches `pythonw handler.py both`, so Python must be installed and on PATH on the target machine.
 
 ---
 
@@ -105,15 +114,26 @@ Each value has an inline comment explaining what it does.
 
 ---
 
-## 6. Files
+## 6. Project structure
 
-| File                  | Purpose                                          |
-|-----------------------|--------------------------------------------------|
-| `gazecontrol.py`      | The merged application (run this)                |
-| `config.py`           | All user-tunable settings                        |
-| `start.vbs`           | Silent background launcher                       |
-| `requirement.txt`     | Python dependencies                              |
-| `face_landmarker.task`| Face model (auto-downloaded)                     |
-| `hand_landmarker.task`| Hand model (auto-downloaded)                     |
+```
+GazeSwitch/
+├─ handler.py            ← launcher / dispatcher (run this)
+├─ config.py             ← all user-tunable settings
+├─ start.vbs             ← silent background launcher
+├─ requirement.txt       ← Python dependencies
+├─ README.md
+│
+├─ apps/                 ← the three runnable apps (each self-contained)
+│   ├─ combined.py       ← gaze + scroll together
+│   ├─ gaze.py           ← gaze switch only
+│   └─ scroll.py         ← finger scroll only
+│
+└─ models/               ← MediaPipe models (auto-downloaded on first run)
+    ├─ face_landmarker.task
+    └─ hand_landmarker.task
+```
 
-> Note: **Gaze Switch requires 2+ monitors.** With a single monitor it auto-disables and only Finger Scroll runs.
+Each app in `apps/` is **self-contained** — it can be run on its own (`python apps/scroll.py --debug`) and only shares `config.py`. The models live in `models/` and download automatically the first time they're needed.
+
+> Note: **Gaze Switch requires 2+ monitors.** In `both` mode with a single monitor, gaze auto-disables and only Finger Scroll runs. In `gaze` mode it exits with a message.

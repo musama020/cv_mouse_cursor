@@ -1,16 +1,17 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import cv2
 import mediapipe as mp
 import numpy as np
 import pyautogui
 import screeninfo
 import keyboard
-import math
 import time
-import os
-import sys
 import threading
 import urllib.request
-import importlib
 import ctypes
 import ctypes.wintypes
 
@@ -31,21 +32,15 @@ except Exception:
 DEBUG = "--debug" in sys.argv
 
 
-def log(*args):
+def log(*args, **kwargs):
     if DEBUG:
-        print(*args)
-
-
-WRIST = 0
-INDEX_TIP = 8
-FINGER_TIPS = [8, 12, 16, 20]
-FINGER_PIPS = [6, 10, 14, 18]
-INDEX_CHAIN = [5, 6, 7, 8]
+        print(*args, **kwargs)
 
 
 def _download(url, path, label):
     if os.path.exists(path):
         return True
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     log(f"Downloading {label} model…")
     try:
         def _progress(count, block, total):
@@ -57,14 +52,6 @@ def _download(url, path, label):
     except Exception as e:
         print(f"\nDownload of {label} model failed: {e}")
         return False
-
-
-def ensure_models():
-    ok_face = _download(config.FACE_MODEL_URL,
-                        config.SHARED["face_model_file"], "face")
-    ok_hand = _download(config.HAND_MODEL_URL,
-                        config.SHARED["hand_model_file"], "hand")
-    return ok_face, ok_hand
 
 
 class _MONITORINFO(ctypes.Structure):
@@ -120,41 +107,6 @@ def move_cursor(x, y, duration=0.0):
         _set(int(x), int(y))
 
 
-def count_fingers(landmarks):
-    count = 0
-    for tip, pip in zip(FINGER_TIPS, FINGER_PIPS):
-        if landmarks[tip].y < landmarks[pip].y:
-            count += 1
-    return count
-
-
-def _angle_at(a, b, c):
-    bax, bay = a.x - b.x, a.y - b.y
-    bcx, bcy = c.x - b.x, c.y - b.y
-    dot = bax * bcx + bay * bcy
-    na = (bax * bax + bay * bay) ** 0.5
-    nc = (bcx * bcx + bcy * bcy) ** 0.5
-    if na < 1e-6 or nc < 1e-6:
-        return 180.0
-    cos = max(-1.0, min(1.0, dot / (na * nc)))
-    return math.degrees(math.acos(cos))
-
-
-def index_straightness(landmarks):
-    p = [landmarks[i] for i in INDEX_CHAIN]
-    pip_angle = _angle_at(p[0], p[1], p[2])
-    dip_angle = _angle_at(p[1], p[2], p[3])
-    return (pip_angle + dip_angle) / 2.0
-
-
-def hand_tilt(landmarks):
-    wrist = landmarks[WRIST]
-    base = landmarks[INDEX_CHAIN[0]]
-    dx = base.x - wrist.x
-    dy = base.y - wrist.y
-    return math.degrees(math.atan2(abs(dx), abs(dy)))
-
-
 class FaceYawDetector:
     LANDMARKS = [1, 33, 263, 61, 291, 199]
 
@@ -174,7 +126,10 @@ class FaceYawDetector:
         self.landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
         self.frame_ts = 0
 
-    def get_yaw_from_image(self, mp_image, w, h):
+    def get_yaw(self, frame):
+        h, w = frame.shape[:2]
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         self.frame_ts += 33
         result = self.landmarker.detect_for_video(mp_image, self.frame_ts)
         if not result.face_landmarks:
@@ -204,48 +159,6 @@ class FaceYawDetector:
         self.landmarker.close()
 
 
-_du = importlib.import_module("mediapipe.tasks.python.vision.drawing_utils")
-_DrawingSpec = _du.DrawingSpec
-_draw_landmarks = _du.draw_landmarks
-_HAND_CONNECTIONS = mp.tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS
-_LANDMARK_SPEC = _DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=3)
-_CONNECTION_SPEC = _DrawingSpec(color=(255, 255, 0), thickness=2)
-
-
-class HandScrollDetector:
-    def __init__(self, model_path):
-        VisionRunningMode = mp.tasks.vision.RunningMode
-        HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
-        BaseOptions = mp.tasks.BaseOptions
-        options = HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=model_path),
-            running_mode=VisionRunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=config.SHARED["min_detection_confidence"],
-            min_hand_presence_confidence=config.SHARED["min_detection_confidence"],
-            min_tracking_confidence=config.SHARED["min_tracking_confidence"],
-        )
-        self.landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
-        self.frame_ts = 0
-
-    def process_image(self, mp_image):
-        self.frame_ts += 33
-        result = self.landmarker.detect_for_video(mp_image, self.frame_ts)
-        if not result.hand_landmarks:
-            return None
-        return result.hand_landmarks[0]
-
-    def draw(self, frame_bgr, landmarks):
-        _draw_landmarks(
-            frame_bgr, landmarks, _HAND_CONNECTIONS,
-            landmark_drawing_spec=_LANDMARK_SPEC,
-            connection_drawing_spec=_CONNECTION_SPEC,
-        )
-
-    def close(self):
-        self.landmarker.close()
-
-
 class CursorController:
     def __init__(self, centers):
         self.centers = centers
@@ -259,49 +172,6 @@ class CursorController:
         self.active_idx = idx
 
 
-class ScrollController:
-    def __init__(self):
-        self.smooth_a = None
-        self.direction = +1
-        self.last_action = ""
-        self.last_angle = 0.0
-
-    def reset(self):
-        self.smooth_a = None
-        self.last_action = ""
-
-    def _smooth(self, angle):
-        a = config.SCROLL["smoothing"]
-        if self.smooth_a is None:
-            self.smooth_a = angle
-        else:
-            self.smooth_a = a * self.smooth_a + (1.0 - a) * angle
-        return self.smooth_a
-
-    def update(self, straightness, finger_count):
-        ang = self._smooth(straightness)
-        self.last_angle = ang
-        thr = config.SCROLL["straight_angle"]
-        hyst = config.SCROLL["hysteresis"]
-        if self.direction > 0:
-            if ang < thr - hyst:
-                self.direction = -1
-        else:
-            if ang > thr + hyst:
-                self.direction = +1
-        if self.direction > 0:
-            amount = config.SCROLL["scroll_up_speed"]
-            label = "UP"
-        else:
-            amount = config.SCROLL["scroll_down_speed"]
-            label = "DOWN"
-        if config.SCROLL["gesture_mode"] and finger_count >= 2:
-            amount *= config.SCROLL["gesture_mode_speed_mult"]
-        pyautogui.scroll(self.direction * amount)
-        self.last_action = f"{label} x{amount}"
-        return self.last_action
-
-
 def _make_icon_image(color):
     img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -309,24 +179,16 @@ def _make_icon_image(color):
     return img
 
 
-class GazeControlApp:
+class GazeApp:
     def __init__(self):
-        self.gaze_enabled = config.GAZE["enabled_on_start"]
-        self.scroll_enabled = config.SCROLL["enabled_on_start"]
+        self.enabled = config.GAZE["enabled_on_start"]
         self.cam_released = False
         self.running = True
         self.lock = threading.Lock()
         self.cap = None
-        self.tray = None
-
-        self.face_detector = None
-        self.hand_detector = None
+        self.detector = None
         self.cursor = None
-        self.scroller = None
-        self.has_two_monitors = False
-
-        self._top_fired = False
-        self._tilt_paused = False
+        self.tray = None
         self._last_yaw = None
 
     def _open_camera(self):
@@ -342,8 +204,6 @@ class GazeControlApp:
             if not self.cam_released and self.cap is not None:
                 self.cap.release()
                 self.cam_released = True
-                if self.scroller:
-                    self.scroller.reset()
                 log("Camera released.")
                 self._update_tray()
 
@@ -361,32 +221,22 @@ class GazeControlApp:
         else:
             self.release_camera()
 
-    def toggle_gaze(self):
-        self.gaze_enabled = not self.gaze_enabled
-        log(f"Gaze switch {'ENABLED' if self.gaze_enabled else 'DISABLED'}")
-        self._update_tray()
-
-    def toggle_scroll(self):
-        self.scroll_enabled = not self.scroll_enabled
-        if not self.scroll_enabled and self.scroller:
-            self.scroller.reset()
-        log(f"Finger scroll {'ENABLED' if self.scroll_enabled else 'DISABLED'}")
+    def toggle_enabled(self):
+        self.enabled = not self.enabled
+        log(f"Gaze switch {'ENABLED' if self.enabled else 'DISABLED'}")
         self._update_tray()
 
     def _tray_title(self):
         if self.cam_released:
-            return "GazeControl — Camera released"
-        parts = []
-        parts.append("Gaze:" + ("on" if self.gaze_enabled else "off"))
-        parts.append("Scroll:" + ("on" if self.scroll_enabled else "off"))
-        return "GazeControl — " + "  ".join(parts)
+            return "GazeSwitch — Camera released"
+        return "GazeSwitch — " + ("Active" if self.enabled else "Disabled")
 
     def _update_tray(self):
         if self.tray is None:
             return
         if self.cam_released:
             color = (180, 100, 0)
-        elif self.gaze_enabled or self.scroll_enabled:
+        elif self.enabled:
             color = (0, 200, 100)
         else:
             color = (120, 120, 120)
@@ -395,11 +245,8 @@ class GazeControlApp:
         self.tray.update_menu()
 
     def _build_menu(self):
-        def on_gaze(icon, item):
-            self.toggle_gaze()
-
-        def on_scroll(icon, item):
-            self.toggle_scroll()
+        def on_toggle(icon, item):
+            self.toggle_enabled()
 
         def on_camera(icon, item):
             self.toggle_camera()
@@ -412,14 +259,9 @@ class GazeControlApp:
         hk = config.SHARED
         return pystray.Menu(
             pystray.MenuItem(
-                lambda item: f"{'Disable' if self.gaze_enabled else 'Enable'} Gaze Switch ({hk['hotkey_gaze']})",
-                on_gaze,
+                lambda item: f"{'Disable' if self.enabled else 'Enable'} Gaze Switch ({hk['hotkey_gaze']})",
+                on_toggle,
             ),
-            pystray.MenuItem(
-                lambda item: f"{'Disable' if self.scroll_enabled else 'Enable'} Finger Scroll ({hk['hotkey_scroll']})",
-                on_scroll,
-            ),
-            pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 lambda item: f"{'Reclaim' if self.cam_released else 'Release'} Camera ({hk['hotkey_camera']})",
                 on_camera,
@@ -430,7 +272,7 @@ class GazeControlApp:
 
     def _run_tray(self):
         self.tray = pystray.Icon(
-            "GazeControl",
+            "GazeSwitch",
             _make_icon_image((0, 200, 100)),
             self._tray_title(),
             menu=self._build_menu(),
@@ -438,8 +280,6 @@ class GazeControlApp:
         self.tray.run()
 
     def _handle_gaze(self, yaw):
-        if yaw is None:
-            return
         eff_yaw = -yaw if config.GAZE["invert_yaw"] else yaw
         if self._last_yaw is None or abs(yaw - self._last_yaw) > 0.5:
             log(f"yaw raw={yaw:+.1f} eff={eff_yaw:+.1f} active={self.cursor.active_idx}")
@@ -459,47 +299,7 @@ class GazeControlApp:
         if screen_idx is not None:
             self.cursor.jump_to(screen_idx)
 
-    def _handle_scroll(self, hand, frame):
-        if hand is None:
-            self.scroller.reset()
-            self._top_fired = False
-            self._tilt_paused = False
-            return ""
-        landmarks = hand
-        finger_count = count_fingers(landmarks)
-        tilt = hand_tilt(landmarks)
-        if config.SCROLL["pause_on_tilt"]:
-            open_palm = finger_count >= 4
-            if self._tilt_paused:
-                if tilt < config.SCROLL["pause_tilt_release"] and not open_palm:
-                    self._tilt_paused = False
-            elif tilt > config.SCROLL["pause_tilt"] or open_palm:
-                self._tilt_paused = True
-
-        action = ""
-        if not self._tilt_paused:
-            if config.SCROLL["gesture_mode"] and finger_count >= 3:
-                if not self._top_fired:
-                    pyautogui.hotkey("ctrl", "home")
-                    self._top_fired = True
-                action = "TOP"
-            else:
-                self._top_fired = False
-                straightness = index_straightness(landmarks)
-                action = self.scroller.update(straightness, finger_count)
-        else:
-            self.scroller.reset()
-            action = "PAUSED"
-
-        if DEBUG and frame is not None:
-            self.hand_detector.draw(frame, hand)
-            cv2.putText(frame, f"scroll: {action} tilt={tilt:.0f}",
-                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        return action
-
     def _loop(self):
-        cam_w = config.SHARED["cam_width"]
-        cam_h = config.SHARED["cam_height"]
         while self.running:
             with self.lock:
                 released = self.cam_released
@@ -515,30 +315,19 @@ class GazeControlApp:
                 continue
 
             frame = cv2.flip(frame, 1)
-            h, w = frame.shape[:2]
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            yaw = self.detector.get_yaw(frame)
 
-            if self.gaze_enabled and self.has_two_monitors and self.face_detector:
-                yaw = self.face_detector.get_yaw_from_image(mp_image, w, h)
+            if self.enabled and yaw is not None:
                 self._handle_gaze(yaw)
 
-            if self.scroll_enabled and self.hand_detector:
-                hand = self.hand_detector.process_image(mp_image)
-                self._handle_scroll(hand, frame if DEBUG else None)
-            elif DEBUG:
-                pass
-
             if DEBUG:
-                state = (f"GAZE:{'on' if self.gaze_enabled else 'off'}  "
-                         f"SCROLL:{'on' if self.scroll_enabled else 'off'}")
-                cv2.putText(frame, state, (10, 30),
+                state = "ACTIVE" if self.enabled else "DISABLED"
+                cv2.putText(frame, f"GAZE {state}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-                cv2.putText(frame, f"{config.SHARED['hotkey_gaze']}=Gaze  "
-                                   f"{config.SHARED['hotkey_scroll']}=Scroll  "
+                cv2.putText(frame, f"{config.SHARED['hotkey_gaze']}=Toggle  "
                                    f"{config.SHARED['hotkey_camera']}=Camera  Q=Quit",
                             (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-                cv2.imshow("GazeControl (debug)", frame)
+                cv2.imshow("GazeSwitch (debug)", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.running = False
                     if self.tray:
@@ -546,46 +335,30 @@ class GazeControlApp:
                     break
 
     def run(self):
-        ok_face, ok_hand = ensure_models()
-        if not (ok_face or ok_hand):
-            print("No models available — cannot start.")
+        if not _download(config.FACE_MODEL_URL, config.SHARED["face_model_file"], "face"):
             sys.exit(1)
 
         pyautogui.FAILSAFE = False
 
         monitors, centers = get_sorted_monitors()
-        self.has_two_monitors = len(monitors) >= 2
-        if not self.has_two_monitors:
-            log("Fewer than 2 monitors detected — gaze switch disabled.")
-            self.gaze_enabled = False
+        if len(monitors) < 2:
+            print("Gaze switch needs 2+ monitors.")
+            sys.exit(1)
 
-        if ok_face and self.has_two_monitors:
-            self.face_detector = FaceYawDetector(config.SHARED["face_model_file"])
-            self.cursor = CursorController(centers)
-        else:
-            self.gaze_enabled = False
-
-        if ok_hand:
-            self.hand_detector = HandScrollDetector(config.SHARED["hand_model_file"])
-            self.scroller = ScrollController()
-        else:
-            self.scroll_enabled = False
-
+        self.detector = FaceYawDetector(config.SHARED["face_model_file"])
+        self.cursor = CursorController(centers)
         self.cap = self._open_camera()
         if not self.cap.isOpened():
             print("Could not open webcam.")
             sys.exit(1)
 
-        keyboard.add_hotkey(config.SHARED["hotkey_gaze"], self.toggle_gaze)
-        keyboard.add_hotkey(config.SHARED["hotkey_scroll"], self.toggle_scroll)
+        keyboard.add_hotkey(config.SHARED["hotkey_gaze"], self.toggle_enabled)
         keyboard.add_hotkey(config.SHARED["hotkey_camera"], self.toggle_camera)
 
         t_tray = threading.Thread(target=self._run_tray, daemon=True)
         t_tray.start()
 
-        log("GazeControl running. Hotkeys: "
-            f"{config.SHARED['hotkey_gaze']}=Gaze  "
-            f"{config.SHARED['hotkey_scroll']}=Scroll  "
+        log(f"GazeSwitch running. {config.SHARED['hotkey_gaze']}=Toggle  "
             f"{config.SHARED['hotkey_camera']}=Camera")
 
         self._loop()
@@ -594,17 +367,14 @@ class GazeControlApp:
         keyboard.unhook_all()
         if self.cap is not None:
             self.cap.release()
-        if self.face_detector:
-            self.face_detector.close()
-        if self.hand_detector:
-            self.hand_detector.close()
+        self.detector.close()
         if DEBUG:
             cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
     import signal
-    app = GazeControlApp()
+    app = GazeApp()
     signal.signal(signal.SIGINT,
                   lambda s, f: (setattr(app, "running", False),
                                 app.tray and app.tray.stop()))

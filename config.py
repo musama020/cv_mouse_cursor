@@ -5,6 +5,14 @@ Edit the values below to adjust behaviour, then restart the app.
 Nothing else in the project needs editing for normal tuning.
 """
 
+import os
+
+# Project root = the folder this config.py lives in. All paths below are
+# resolved against it, so apps in apps/ find models/ no matter where they
+# are launched from.
+ROOT = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(ROOT, "models")
+
 # ─────────────────────────────────────────────────────────
 # GAZE SWITCH  (face-direction multi-monitor cursor jump)
 # ─────────────────────────────────────────────────────────
@@ -58,9 +66,9 @@ SHARED = {
     "hotkey_scroll": "F10",   # toggle finger scroll on/off
     "hotkey_camera": "F8",    # release / reclaim the webcam (for Meet / Zoom)
 
-    # Model files (auto-downloaded on first run if missing):
-    "face_model_file": "face_landmarker.task",
-    "hand_model_file": "hand_landmarker.task",
+    # Model files (auto-downloaded into models/ on first run if missing):
+    "face_model_file": os.path.join(MODELS_DIR, "face_landmarker.task"),
+    "hand_model_file": os.path.join(MODELS_DIR, "hand_landmarker.task"),
 }
 
 # ─────────────────────────────────────────────────────────
